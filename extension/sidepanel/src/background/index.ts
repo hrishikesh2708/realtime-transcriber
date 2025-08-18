@@ -8,15 +8,10 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-chrome.tabCapture.capture(
-  { audio: true, video: false },
-  (stream) => {
-    if (!stream) {
-      console.error("Failed:", chrome.runtime.lastError);
-      return;
-    }
-    const audio = new Audio();
-    audio.srcObject = stream;
-    audio.play();
-  }
-);
+// chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+//   if (tabs[0]?.audible) {
+//     console.log("Tab has audio!");
+//   } else {
+//     console.log("No audio in this tab");
+//   }
+// });
