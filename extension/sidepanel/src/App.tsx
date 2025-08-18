@@ -6,12 +6,14 @@ function App() {
   const [recordingStatus, setRecordingStatus] = useState("Idle");
   const [canRecord, setCanRecord] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<string>("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const transcriptionBoxRef = useRef<HTMLDivElement | null>(null);
 
   // --- Helpers ---
   const getTabStream = (): Promise<MediaStream | null> => {
@@ -30,7 +32,6 @@ function App() {
     });
   };
 
-  // --- Check if active tab has audio ---
   const checkTabAudio = async () => {
     const tab = await getActiveTab();
     setCanRecord(!!tab?.audible);
@@ -46,6 +47,19 @@ function App() {
       chrome.tabs.onActivated.removeListener(checkTabAudio);
     };
   }, []);
+
+  // --- Mock transcription API ---
+  const transcribeChunk = async (blob: Blob) => {
+    // Here you would call your real API
+    console.log("Transcribing chunk:", blob);
+    const mockText = "[5s transcribed chunk]\n";
+    setTranscript((prev) => prev + mockText);
+
+    // Auto-scroll transcription box
+    if (transcriptionBoxRef.current) {
+      transcriptionBoxRef.current.scrollTop = transcriptionBoxRef.current.scrollHeight;
+    }
+  };
 
   // --- Stop Recording and cleanup ---
   const stopRecording = () => {
@@ -80,8 +94,6 @@ function App() {
 
       // Ensure previous recording is fully cleaned up
       stopRecording();
-
-      // Small delay to let Chrome release the previous capture
       await new Promise((r) => setTimeout(r, 200));
 
       const stream = await getTabStream();
@@ -89,13 +101,12 @@ function App() {
         setRecordingStatus("❌ Failed to capture audio");
         return;
       }
-
       streamRef.current = stream;
 
       // Play audio while recording
       const audioContext = new AudioContext();
       const sourceNode = audioContext.createMediaStreamSource(stream);
-      sourceNode.connect(audioContext.destination); // user hears audio
+      sourceNode.connect(audioContext.destination);
 
       audioContextRef.current = audioContext;
       sourceNodeRef.current = sourceNode;
@@ -105,9 +116,10 @@ function App() {
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (event) => {
+      mediaRecorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          await transcribeChunk(event.data);
         }
       };
 
@@ -117,38 +129,21 @@ function App() {
       };
 
       mediaRecorder.onstop = () => {
-        // Stop all tracks
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
-        }
-
-        // Cleanup AudioContext
-        if (sourceNodeRef.current) {
-          sourceNodeRef.current.disconnect();
-          sourceNodeRef.current = null;
-        }
-
-        if (audioContextRef.current) {
-          audioContextRef.current.close();
-          audioContextRef.current = null;
-        }
+        setRecordingStatus("🛑 Stopped");
+        setIsRecording(false);
 
         const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);
 
-        // Auto-download
         const a = document.createElement("a");
         a.href = url;
         a.download = "tab-audio.webm";
         a.click();
-
-        setIsRecording(false);
-        setRecordingStatus("🛑 Stopped");
       };
 
-      mediaRecorder.start();
+      // Emit chunks every 5 seconds
+      mediaRecorder.start(5000);
     } catch (err) {
       console.error("Error starting recording:", err);
       setRecordingStatus("Error: " + (err as Error).message);
@@ -183,9 +178,9 @@ function App() {
             </button>
           )}
         </div>
-        <div className="flex-grow w-full max-w-2xl p-4 bg-gray-800 rounded-lg shadow-md">
-          <p>Transcription box</p>
-        </div>
+      <div className="flex-grow w-full max-w-2xl p-4 bg-gray-800 rounded-lg shadow-md overflow-auto text-white">
+        <p>{transcript || "Transcription will appear here..."}</p>
+      </div>
         <div className="flex items-center justify-center flex-row gap-6">
           <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
             Recording state
