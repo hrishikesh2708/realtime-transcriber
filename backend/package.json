@@ -11,18 +11,22 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@google-cloud/speech": "^7.2.0",
     "@google/genai": "^1.14.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "form-data": "^4.0.4",
     "multer": "^2.0.2",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   }

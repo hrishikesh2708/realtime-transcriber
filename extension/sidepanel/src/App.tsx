@@ -5,7 +5,6 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("Idle");
   const [canRecord, setCanRecord] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -15,23 +14,22 @@ function App() {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const transcriptionBoxRef = useRef<HTMLDivElement | null>(null);
   const activeTabIdRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // --- Helpers ---
-  const getTabStream = (): Promise<MediaStream | null> => {
-    return new Promise((resolve) => {
+  const getTabStream = (): Promise<MediaStream | null> =>
+    new Promise((resolve) => {
       chrome.tabCapture.capture({ audio: true, video: false }, (stream) => {
         resolve(stream ?? null);
       });
     });
-  };
 
-  const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
-    return new Promise((resolve) => {
+  const getActiveTab = async (): Promise<chrome.tabs.Tab | null> =>
+    new Promise((resolve) => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         resolve(tabs[0] ?? null);
       });
     });
-  };
 
   const checkTabAudio = async () => {
     const tab = await getActiveTab();
@@ -42,44 +40,18 @@ function App() {
     checkTabAudio();
     chrome.tabs.onUpdated.addListener(checkTabAudio);
     chrome.tabs.onActivated.addListener(checkTabAudio);
-
     return () => {
       chrome.tabs.onUpdated.removeListener(checkTabAudio);
       chrome.tabs.onActivated.removeListener(checkTabAudio);
     };
   }, []);
 
-  // --- Mock transcription API ---
-const transcribeChunk = async (blob: Blob) => {
-  try {
-    const formData = new FormData();
-    formData.append("file", blob, "chunk.webm"); // Match backend field name
-
-    const response = await fetch("http://localhost:7214/transcribe", {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) throw new Error("API request failed");
-
-    const data = await response.json();
-    const text = data.text || ""; // Your backend returns { text: ... }
-
-    // Append to transcript
-    setTranscript((prev) => prev + text + "\n");
-
-    // Auto-scroll transcription box
-    if (transcriptionBoxRef.current) {
-      transcriptionBoxRef.current.scrollTop = transcriptionBoxRef.current.scrollHeight;
-    }
-  } catch (err) {
-    console.error("Transcription error:", err);
-  }
-};
-
   // --- Stop Recording and cleanup ---
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== "inactive"
+    ) {
       mediaRecorderRef.current.stop();
     }
 
@@ -98,6 +70,11 @@ const transcribeChunk = async (blob: Blob) => {
       audioContextRef.current = null;
     }
 
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
     mediaRecorderRef.current = null;
     setIsRecording(false);
     setRecordingStatus("Stopped");
@@ -108,8 +85,6 @@ const transcribeChunk = async (blob: Blob) => {
   const startRecording = async () => {
     try {
       setRecordingStatus("Requesting audio...");
-
-      // Cleanup previous recording
       stopRecording();
       await new Promise((r) => setTimeout(r, 200));
 
@@ -134,33 +109,54 @@ const transcribeChunk = async (blob: Blob) => {
       audioContextRef.current = audioContext;
       sourceNodeRef.current = sourceNode;
 
-      // Setup MediaRecorder
+      // --- Setup WebSocket ---
+      const ws = new WebSocket("ws://localhost:7214");
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => setRecordingStatus("🎙️ Recording (WebSocket)...");
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.transcript && data.isFinal) {
+          setTranscript((prev) => prev + data.transcript + "\n");
+          if (transcriptionBoxRef.current) {
+            transcriptionBoxRef.current.scrollTop =
+              transcriptionBoxRef.current.scrollHeight;
+          }
+        }
+      };
+
+      ws.onerror = (err) => console.error("WebSocket error:", err);
+      ws.onclose = () => console.log("WebSocket closed");
+
+      // --- Setup MediaRecorder ---
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size > 0) {
+      mediaRecorder.ondataavailable = (event) => {
+        if (
+          event.data.size > 0 &&
+          wsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          wsRef.current.send(event.data);
           audioChunksRef.current.push(event.data);
-          await transcribeChunk(event.data);
         }
       };
 
-      mediaRecorder.onstart = () => {
-        setRecordingStatus("🎙️ Recording...");
-        setIsRecording(true);
-      };
+      mediaRecorder.onstart = () => setIsRecording(true);
 
       // Stop listener if tab goes silent
-      const stopOnTabSilent = (_tabId: number, changeInfo: Partial<chrome.tabs.Tab>) => {
-        if (_tabId === activeTabIdRef.current && changeInfo.audible === false) {
+      const stopOnTabSilent = (
+        _tabId: number,
+        changeInfo: Partial<chrome.tabs.Tab>
+      ) => {
+        if (_tabId === activeTabIdRef.current && changeInfo.audible === false)
           stopRecording();
-        }
       };
       chrome.tabs.onUpdated.addListener(stopOnTabSilent);
 
       mediaRecorder.onstop = () => {
-        // Stop all tracks and cleanup
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((track) => track.stop());
           streamRef.current = null;
@@ -174,12 +170,10 @@ const transcribeChunk = async (blob: Blob) => {
           audioContextRef.current = null;
         }
 
-        // Remove listener
         chrome.tabs.onUpdated.removeListener(stopOnTabSilent);
 
         const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
 
         const a = document.createElement("a");
         a.href = url;
@@ -192,18 +186,17 @@ const transcribeChunk = async (blob: Blob) => {
       };
 
       // Emit chunks every 10 seconds
-      mediaRecorder.start(20000);
+      mediaRecorder.start(1000);
     } catch (err) {
       console.error("Error starting recording:", err);
       setRecordingStatus("Error: " + (err as Error).message);
     }
   };
 
-
   return (
     <>
       <div className="flex flex-col items-center min-h-screen p-2 gap-2">
-        <h1 className="">Real-Time Audio Transcription</h1>
+        <h1>Transcribe AI</h1>
 
         <div className="flex items-center justify-center flex-row gap-6">
           {!isRecording ? (
@@ -227,37 +220,51 @@ const transcribeChunk = async (blob: Blob) => {
             </button>
           )}
         </div>
-      <div className="flex-grow w-full max-w-2xl p-4 bg-gray-800 rounded-lg shadow-md overflow-auto text-white">
-        <p>{transcript || "Transcription will appear here..."}</p>
-      </div>
-        <div className="flex items-center justify-center flex-row gap-6">
-          <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
-            Recording state
-          </button>
-          <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
-            Display current session duration
-          </button>
-          <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
-            connection status
-          </button>
-        </div>
-        <div className="mt-4 p-4 bg-gray-800 rounded-lg shadow-md text-white">
-          <p>Status: {recordingStatus}</p>
-          {!canRecord && <p className="text-red-400">No audio in active tab</p>}
+        <div className="flex-grow w-full max-w-2xl p-4 bg-black rounded-lg shadow-md overflow-auto text-white">
+          <div className="">
+            <div className="flex flex-row items-center gap-2">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke-width="1.5"
+                stroke="currentColor"
+                className="size-6"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                />
+              </svg>
+              <p className="text-xl font-semibold"> Live Transcript</p>
+            </div>
+          </div>
+          <div
+            ref={transcriptionBoxRef}
+          >
+            <p>{transcript || "Transcription will appear here..."}</p>
+          </div>
         </div>
 
-        {audioUrl && (
-          <div className="mt-4">
-            <p className="text-white">Last recording:</p>
-            <audio controls src={audioUrl} className="mt-2 w-full" />
+        <div className="flex items-center justify-center flex-row gap-6">
+          <div className="mt-4 p-4 bg-gray-800 rounded-lg shadow-md text-white">
+            <p>Status: {recordingStatus}</p>
+            {!canRecord && (
+              <p className="text-red-400">No audio in active tab</p>
+            )}
           </div>
-        )}
+          <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
+            Session Duration
+          </button>
+        </div>
+
         <div className="flex items-center justify-center flex-row gap-6">
           <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
             Copy transcript to clipboard
           </button>
           <button className="bg-sky-500 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded">
-            download as text/JSON
+            Download as text/JSON
           </button>
         </div>
       </div>
