@@ -14,6 +14,7 @@ function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const transcriptionBoxRef = useRef<HTMLDivElement | null>(null);
+  const activeTabIdRef = useRef<number | null>(null);
 
   // --- Helpers ---
   const getTabStream = (): Promise<MediaStream | null> => {
@@ -49,17 +50,32 @@ function App() {
   }, []);
 
   // --- Mock transcription API ---
-  const transcribeChunk = async (blob: Blob) => {
-    // Here you would call your real API
-    console.log("Transcribing chunk:", blob);
-    const mockText = "[5s transcribed chunk]\n";
-    setTranscript((prev) => prev + mockText);
+const transcribeChunk = async (blob: Blob) => {
+  try {
+    const formData = new FormData();
+    formData.append("file", blob, "chunk.webm"); // Match backend field name
+
+    const response = await fetch("http://localhost:7214/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) throw new Error("API request failed");
+
+    const data = await response.json();
+    const text = data.text || ""; // Your backend returns { text: ... }
+
+    // Append to transcript
+    setTranscript((prev) => prev + text + "\n");
 
     // Auto-scroll transcription box
     if (transcriptionBoxRef.current) {
       transcriptionBoxRef.current.scrollTop = transcriptionBoxRef.current.scrollHeight;
     }
-  };
+  } catch (err) {
+    console.error("Transcription error:", err);
+  }
+};
 
   // --- Stop Recording and cleanup ---
   const stopRecording = () => {
@@ -85,6 +101,7 @@ function App() {
     mediaRecorderRef.current = null;
     setIsRecording(false);
     setRecordingStatus("Stopped");
+    activeTabIdRef.current = null;
   };
 
   // --- Start Recording ---
@@ -92,9 +109,16 @@ function App() {
     try {
       setRecordingStatus("Requesting audio...");
 
-      // Ensure previous recording is fully cleaned up
+      // Cleanup previous recording
       stopRecording();
       await new Promise((r) => setTimeout(r, 200));
+
+      const tab = await getActiveTab();
+      if (!tab) {
+        setRecordingStatus("❌ No active tab found");
+        return;
+      }
+      activeTabIdRef.current = tab.id ?? null;
 
       const stream = await getTabStream();
       if (!stream) {
@@ -107,7 +131,6 @@ function App() {
       const audioContext = new AudioContext();
       const sourceNode = audioContext.createMediaStreamSource(stream);
       sourceNode.connect(audioContext.destination);
-
       audioContextRef.current = audioContext;
       sourceNodeRef.current = sourceNode;
 
@@ -128,9 +151,31 @@ function App() {
         setIsRecording(true);
       };
 
+      // Stop listener if tab goes silent
+      const stopOnTabSilent = (_tabId: number, changeInfo: Partial<chrome.tabs.Tab>) => {
+        if (_tabId === activeTabIdRef.current && changeInfo.audible === false) {
+          stopRecording();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(stopOnTabSilent);
+
       mediaRecorder.onstop = () => {
-        setRecordingStatus("🛑 Stopped");
-        setIsRecording(false);
+        // Stop all tracks and cleanup
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
+        if (sourceNodeRef.current) {
+          sourceNodeRef.current.disconnect();
+          sourceNodeRef.current = null;
+        }
+        if (audioContextRef.current) {
+          audioContextRef.current.close();
+          audioContextRef.current = null;
+        }
+
+        // Remove listener
+        chrome.tabs.onUpdated.removeListener(stopOnTabSilent);
 
         const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         const url = URL.createObjectURL(blob);
@@ -140,10 +185,14 @@ function App() {
         a.href = url;
         a.download = "tab-audio.webm";
         a.click();
+
+        setRecordingStatus("🛑 Stopped");
+        setIsRecording(false);
+        activeTabIdRef.current = null;
       };
 
-      // Emit chunks every 5 seconds
-      mediaRecorder.start(5000);
+      // Emit chunks every 10 seconds
+      mediaRecorder.start(20000);
     } catch (err) {
       console.error("Error starting recording:", err);
       setRecordingStatus("Error: " + (err as Error).message);
