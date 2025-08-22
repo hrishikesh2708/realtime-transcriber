@@ -5,8 +5,10 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("Idle");
   const [canRecord, setCanRecord] = useState(false);
-  const [transcript, setTranscript] = useState<string>("");
-
+  const [finalTranscript, setFinalTranscript] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [displayedLive, setDisplayedLive] = useState("");
+  const typewriterRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -16,6 +18,7 @@ function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [showExport, setShowExport] = useState(false);
 
   // --- Helpers ---
   const getTabStream = (): Promise<MediaStream | null> =>
@@ -45,6 +48,46 @@ function App() {
     return `${h}:${m}:${s}`;
   };
 
+  // --- Export Helpers ---
+  const copyToClipboard = () => {
+    const transcript = finalTranscript + displayedLive;
+    if (transcript.trim()) {
+      navigator.clipboard.writeText(transcript);
+      alert("Transcript copied to clipboard!");
+    } else {
+      alert("Transcript is empty.");
+    }
+  };
+
+  const downloadJSON = () => {
+    const data = {
+      sessionDuration: formatTime(elapsedTime),
+      transcript: finalTranscript + displayedLive,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "transcript.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadTXT = () => {
+    const blob = new Blob([finalTranscript + displayedLive], {
+      type: "text/plain",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "transcript.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+
   useEffect(() => {
     checkTabAudio();
     chrome.tabs.onUpdated.addListener(checkTabAudio);
@@ -55,12 +98,32 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-  if (transcriptionBoxRef.current) {
-    transcriptionBoxRef.current.scrollTop =
-      transcriptionBoxRef.current.scrollHeight;
-  }
-}, [transcript]);
+
+  // --- Typewriter effect for live transcript ---
+useEffect(() => {
+  if (!liveTranscript) return;
+
+  if (typewriterRef.current) clearInterval(typewriterRef.current);
+
+  let currentIndex = displayedLive.length; // start from already displayed length
+
+  typewriterRef.current = setInterval(() => {
+    // Only type characters that are new
+    if (currentIndex < liveTranscript.length) {
+      setDisplayedLive((prev) => {
+        const nextChar = liveTranscript[currentIndex];
+        currentIndex++;
+        return prev + nextChar;
+      });
+    } else {
+      if (typewriterRef.current) clearInterval(typewriterRef.current);
+    }
+  }, 20); // adjust typing speed here
+
+  return () => {
+    if (typewriterRef.current) clearInterval(typewriterRef.current);
+  };
+}, [liveTranscript]);
 
   // --- Stop Recording and cleanup ---
   const stopRecording = () => {
@@ -135,14 +198,26 @@ function App() {
       wsRef.current = ws;
 
       ws.onopen = () => setRecordingStatus("🎙️ Recording (WebSocket)...");
+      // WebSocket message handler
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        if (data.transcript && data.isFinal) {
-          setTranscript((prev) => prev + data.transcript + "\n");
-          if (transcriptionBoxRef.current) {
-            transcriptionBoxRef.current.scrollTop =
-              transcriptionBoxRef.current.scrollHeight;
+
+        if (data.transcript) {
+          if (data.isFinal) {
+            // Lock in the text
+            setFinalTranscript((prev) => prev + data.transcript + " ");
+            setLiveTranscript("");
+            setDisplayedLive(""); // reset typewriter buffer
+          } else {
+            // Update live (streaming words)
+            setLiveTranscript(data.transcript);
           }
+        }
+
+        // Keep scroll at bottom
+        if (transcriptionBoxRef.current) {
+          transcriptionBoxRef.current.scrollTop =
+            transcriptionBoxRef.current.scrollHeight;
         }
       };
 
@@ -249,8 +324,11 @@ function App() {
             ref={transcriptionBoxRef}
             className="flex-1 border-t border-gray-500 my-2 py-2 overflow-y-auto max-h-570 whitespace-pre-wrap break-words"
           >
-            {transcript.length > 0 ? (
-              <p className="text-sm leading-relaxed pr-4">{transcript}</p>
+            {finalTranscript || displayedLive ? (
+              <p className="text-gray-400 text-sm leading-relaxed pr-4">
+                {finalTranscript}
+                <span className="text-gray-400 animate-fadeIn">{displayedLive}</span>
+              </p>
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-center py-12">
                 <div className="w-16 h-16 rounded-full bg-gray-600/50 flex items-center justify-center mb-4">
@@ -376,60 +454,65 @@ function App() {
               </div>
             )}
           </div>
-          <div className="m-1 hs-dropdown [--trigger:hover] relative inline-flex">
-            <button
-              id="hs-dropdown-hover-event"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded="false"
-              aria-label="Dropdown"
-              className="relative inline-block p-px font-semibold leading-6 text-white bg-gray-700 shadow-xl/50 cursor-pointer rounded-xl shadow-zinc-600 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 group"
-            >
-              <span className="absolute inset-0 rounded-xl bg-gradient-to-r from-teal-400 via-blue-500 to-purple-500 p-[2px] opacity-0 transition-opacity duration-500 group-hover:opacity-100"></span>
+          {/* Export Dropdown */}
+          <div className="m-1 relative inline-flex">
+            <div className="relative">
+              <button
+                onClick={() => setShowExport((prev) => !prev)}
+                className="relative inline-block p-px font-semibold leading-6 text-white bg-gray-700 shadow-xl/50 cursor-pointer rounded-xl shadow-zinc-600 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 group"
+              >
+                <span className="absolute inset-0 rounded-xl bg-gradient-to-r from-teal-400 via-blue-500 to-purple-500 p-[2px] opacity-0 transition-opacity duration-500 group-hover:opacity-100"></span>
 
-              <span className="relative z-10 block px-6 py-3 rounded-xl bg-gray-950">
-                <div className="relative z-10 flex items-center space-x-2">
-                  <span className="transition-all duration-500 group-hover:translate-x-1">
-                    Export
-                  </span>
-                  <svg
-                    className="size-4 transition-transform duration-500 group-hover:translate-x-1"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth="1.7"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m6 9 6 6 6-6"
-                    />
-                  </svg>
+                <span className="relative z-10 block px-6 py-3 rounded-xl bg-gray-950">
+                  <div className="relative z-10 flex items-center space-x-2">
+                    <span className="transition-all duration-500 group-hover:translate-x-1">
+                      Export
+                    </span>
+                    <svg
+                      className="size-4 transition-transform duration-500 group-hover:translate-x-1"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth="1.7"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m6 15 6-6 6 6"
+                      />
+                    </svg>
+                  </div>
+                </span>
+              </button>
+
+              {showExport && (
+                <div
+                  className="absolute right-0 bottom-full mb-2 min-w-60 bg-white shadow-md rounded-lg dark:bg-neutral-800 dark:border dark:border-neutral-700"
+                  role="menu"
+                >
+                  <div className="p-1 space-y-0.5">
+                    <button
+                      onClick={copyToClipboard}
+                      className="w-full text-left flex items-center gap-x-3.5 py-2 px-3 rounded-lg text-sm text-gray-800 hover:bg-gray-100 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+                    >
+                      📋 Copy to Clipboard
+                    </button>
+                    <button
+                      onClick={downloadJSON}
+                      className="w-full text-left flex items-center gap-x-3.5 py-2 px-3 rounded-lg text-sm text-gray-800 hover:bg-gray-100 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+                    >
+                      📂 Download JSON
+                    </button>
+                    <button
+                      onClick={downloadTXT}
+                      className="w-full text-left flex items-center gap-x-3.5 py-2 px-3 rounded-lg text-sm text-gray-800 hover:bg-gray-100 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+                    >
+                      📄 Download TXT
+                    </button>
+                  </div>
                 </div>
-              </span>
-            </button>
-
-            <div
-              className="hs-dropdown-menu transition-[opacity,margin] duration hs-dropdown-open:opacity-100 opacity-0 hidden min-w-60 bg-white shadow-md rounded-lg mt-2 dark:bg-neutral-800 dark:border dark:border-neutral-700 dark:divide-neutral-700 after:h-4 after:absolute after:-bottom-4 after:start-0 after:w-full before:h-4 before:absolute before:-top-4 before:start-0 before:w-full"
-              role="menu"
-              aria-orientation="vertical"
-              aria-labelledby="hs-dropdown-hover-event"
-            >
-              <div className="p-1 space-y-0.5">
-                <a
-                  className="flex items-center gap-x-3.5 py-2 px-3 rounded-lg text-sm text-gray-800 hover:bg-gray-100 focus:outline-hidden focus:bg-gray-100 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-300 dark:focus:bg-neutral-700"
-                  href="#"
-                >
-                  Newsletter
-                </a>
-                <a
-                  className="flex items-center gap-x-3.5 py-2 px-3 rounded-lg text-sm text-gray-800 hover:bg-gray-100 focus:outline-hidden focus:bg-gray-100 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-300 dark:focus:bg-neutral-700"
-                  href="#"
-                >
-                  Purchases
-                </a>
-              </div>
+              )}
             </div>
           </div>
         </div>
