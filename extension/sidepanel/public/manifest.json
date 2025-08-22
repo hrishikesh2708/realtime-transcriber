@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "version": "1.0.0",
-  "name": "Real-Time Audio Transcription",
+  "name": "Transcribe AI",
   "background": {
     "service_worker": "background.js"
  },

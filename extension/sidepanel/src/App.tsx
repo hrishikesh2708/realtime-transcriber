@@ -87,7 +87,6 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-
   useEffect(() => {
     checkTabAudio();
     chrome.tabs.onUpdated.addListener(checkTabAudio);
@@ -98,32 +97,31 @@ function App() {
     };
   }, []);
 
-
   // --- Typewriter effect for live transcript ---
-useEffect(() => {
-  if (!liveTranscript) return;
+  useEffect(() => {
+    if (!liveTranscript) return;
 
-  if (typewriterRef.current) clearInterval(typewriterRef.current);
-
-  let currentIndex = displayedLive.length; // start from already displayed length
-
-  typewriterRef.current = setInterval(() => {
-    // Only type characters that are new
-    if (currentIndex < liveTranscript.length) {
-      setDisplayedLive((prev) => {
-        const nextChar = liveTranscript[currentIndex];
-        currentIndex++;
-        return prev + nextChar;
-      });
-    } else {
-      if (typewriterRef.current) clearInterval(typewriterRef.current);
-    }
-  }, 20); // adjust typing speed here
-
-  return () => {
     if (typewriterRef.current) clearInterval(typewriterRef.current);
-  };
-}, [liveTranscript]);
+
+    let currentIndex = displayedLive.length; // start from already displayed length
+
+    typewriterRef.current = setInterval(() => {
+      // Only type characters that are new
+      if (currentIndex < liveTranscript.length) {
+        setDisplayedLive((prev) => {
+          const nextChar = liveTranscript[currentIndex];
+          currentIndex++;
+          return prev + nextChar;
+        });
+      } else {
+        if (typewriterRef.current) clearInterval(typewriterRef.current);
+      }
+    }, 20); // adjust typing speed here
+
+    return () => {
+      if (typewriterRef.current) clearInterval(typewriterRef.current);
+    };
+  }, [liveTranscript]);
 
   // --- Stop Recording and cleanup ---
   const stopRecording = () => {
@@ -327,7 +325,9 @@ useEffect(() => {
             {finalTranscript || displayedLive ? (
               <p className="text-gray-400 text-sm leading-relaxed pr-4">
                 {finalTranscript}
-                <span className="text-gray-400 animate-fadeIn">{displayedLive}</span>
+                <span className="text-gray-400 animate-fadeIn">
+                  {displayedLive}
+                </span>
               </p>
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-center py-12">
@@ -459,7 +459,12 @@ useEffect(() => {
             <div className="relative">
               <button
                 onClick={() => setShowExport((prev) => !prev)}
-                className="relative inline-block p-px font-semibold leading-6 text-white bg-gray-700 shadow-xl/50 cursor-pointer rounded-xl shadow-zinc-600 transition-transform duration-300 ease-in-out hover:scale-105 active:scale-95 group"
+                className={`relative inline-block p-px font-semibold leading-6 text-white bg-gray-700 shadow-xl/50 rounded-xl shadow-zinc-600 transition-transform duration-300 ease-in-out 
+    ${
+      finalTranscript || displayedLive
+        ? "cursor-pointer hover:scale-105 active:scale-95 group"
+        : "cursor-not-allowed opacity-50"
+    }`}
               >
                 <span className="absolute inset-0 rounded-xl bg-gradient-to-r from-teal-400 via-blue-500 to-purple-500 p-[2px] opacity-0 transition-opacity duration-500 group-hover:opacity-100"></span>
 
